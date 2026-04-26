@@ -1,200 +1,203 @@
 import sqlite3
-from flask import Flask, render_template_string, request, session, redirect, flash
-from werkzeug.security import generate_password_hash, check_password_hash
+from kivy.app import App
+from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.label import Label
+from kivy.uix.button import Button
+from kivy.uix.textinput import TextInput
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.gridlayout import GridLayout
 
-app = Flask(__name__)
-app.secret_key = "super_secure_key"
+# ================= DATABASE =================
+conn = sqlite3.connect("garden_pro.db")
+cursor = conn.cursor()
 
-# ---------------- DATABASE ----------------
-def init_db():
-    conn = sqlite3.connect('store.db')
-    c = conn.cursor()
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    price REAL
+)
+""")
+conn.commit()
 
-    c.execute('''CREATE TABLE IF NOT EXISTS products 
-                 (id INTEGER PRIMARY KEY, name TEXT, price REAL, cat TEXT, img TEXT)''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (username TEXT PRIMARY KEY, password TEXT)''')
-
-    # Seed products
-    c.execute("SELECT COUNT(*) FROM products")
-    if c.fetchone()[0] == 0:
-        data = [
-            (1, 'Ultra Phone', 999, 'Electronics', 'https://picsum.photos/200'),
-            (2, 'Pro Laptop', 1500, 'Electronics', 'https://picsum.photos/200'),
-            (3, 'Smart Watch', 200, 'Tech', 'https://picsum.photos/200'),
-            (4, 'Air Buds', 150, 'Audio', 'https://picsum.photos/200')
-        ]
-        c.executemany("INSERT INTO products VALUES (?,?,?,?,?)", data)
-
+# Seed data (Malawi produce)
+cursor.execute("SELECT COUNT(*) FROM products")
+if cursor.fetchone()[0] == 0:
+    items = [
+        ("Bananas", 1200),
+        ("Maize (Chimanga)", 6500),
+        ("Beans (Nyemba)", 5000),
+        ("Tomatoes", 1800),
+        ("Cassava", 3000),
+        ("Sweet Potatoes", 2500),
+        ("Onions", 2200),
+        ("Rice", 7000)
+    ]
+    cursor.executemany("INSERT INTO products (name, price) VALUES (?,?)", items)
     conn.commit()
-    conn.close()
 
-init_db()
+# ================= CART =================
+cart = {}
 
-# ---------------- HTML ----------------
-html = """
-<!DOCTYPE html>
-<html>
-<head>
-<title>NexStore PRO+</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
+# ================= SCREENS =================
+class HomeScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.load_ui()
 
-<body class="bg-light">
+    def load_ui(self):
+        layout = BoxLayout(orientation="vertical")
 
-<div class="container mt-4">
+        title = Label(text="🌿 Raw Garden Carts PRO", size_hint=(1, 0.1))
+        layout.add_widget(title)
 
-<h3>NexStore PRO+</h3>
+        btn_cart = Button(text="🛒 View Cart", size_hint=(1, 0.1))
+        btn_cart.bind(on_press=lambda x: self.manager.current = "cart")
+        layout.add_widget(btn_cart)
 
-{% if session.user %}
-<p>Welcome, {{ session.user }} | <a href="/logout">Logout</a></p>
-{% else %}
-<a href="/login">Login</a> | <a href="/register">Register</a>
-{% endif %}
+        btn_admin = Button(text="🧑‍🌾 Admin Panel", size_hint=(1, 0.1))
+        btn_admin.bind(on_press=lambda x: self.manager.current = "admin")
+        layout.add_widget(btn_admin)
 
-<hr>
+        scroll = ScrollView()
+        grid = GridLayout(cols=1, size_hint_y=None)
+        grid.bind(minimum_height=grid.setter("height"))
 
-{% with messages = get_flashed_messages() %}
-{% for m in messages %}
-<div class="alert alert-info">{{ m }}</div>
-{% endfor %}
-{% endwith %}
+        cursor.execute("SELECT * FROM products")
+        products = cursor.fetchall()
 
-{% if page == 'home' %}
-<div class="row">
-{% for p in products %}
-<div class="col-6 mb-3">
-<div class="card p-2">
-<img src="{{ p[4] }}">
-<b>{{ p[1] }}</b>
-${{ p[2] }}
-<form method="post" action="/add">
-<input type="hidden" name="id" value="{{ p[0] }}">
-<button class="btn btn-primary w-100 mt-2">Add</button>
-</form>
-</div>
-</div>
-{% endfor %}
-</div>
+        for p in products:
+            box = BoxLayout(size_hint_y=None, height=50)
 
-<a href="/cart" class="btn btn-dark">Cart ({{ count }})</a>
+            box.add_widget(Label(text=f"{p[1]} - MWK {p[2]}"))
 
-{% elif page == 'cart' %}
-<h4>Cart</h4>
-{% for i in cart %}
-<div>{{ i.name }} - ${{ i.price }} x{{ i.qty }}</div>
-{% endfor %}
-<h5>Total: ${{ total }}</h5>
+            btn = Button(text="Add", size_hint_x=0.3)
+            btn.bind(on_press=lambda x, pid=p[0]: self.add_to_cart(pid))
 
-{% elif page == 'login' %}
-<form method="post">
-<input name="u" class="form-control mb-2" placeholder="Username">
-<input name="p" type="password" class="form-control mb-2" placeholder="Password">
-<button class="btn btn-primary w-100">Login</button>
-</form>
+            box.add_widget(btn)
+            grid.add_widget(box)
 
-{% elif page == 'register' %}
-<form method="post">
-<input name="u" class="form-control mb-2" placeholder="Username">
-<input name="p" type="password" class="form-control mb-2" placeholder="Password">
-<button class="btn btn-success w-100">Register</button>
-</form>
-{% endif %}
+        scroll.add_widget(grid)
+        layout.add_widget(scroll)
 
-</div>
-</body>
-</html>
-"""
+        self.add_widget(layout)
 
-# ---------------- ROUTES ----------------
+    def add_to_cart(self, pid):
+        cursor.execute("SELECT * FROM products WHERE id=?", (pid,))
+        p = cursor.fetchone()
 
-@app.route("/")
-def home():
-    conn = sqlite3.connect('store.db')
-    products = conn.execute("SELECT * FROM products").fetchall()
-    conn.close()
+        if p:
+            if pid in cart:
+                cart[pid]["qty"] += 1
+            else:
+                cart[pid] = {"name": p[1], "price": p[2], "qty": 1}
 
-    cart = session.get('cart', [])
-    count = sum(i['qty'] for i in cart)
+class CartScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.build()
 
-    return render_template_string(html, page='home', products=products, count=count)
+    def build(self):
+        layout = BoxLayout(orientation="vertical")
 
-# ADD TO CART
-@app.route("/add", methods=["POST"])
-def add():
-    pid = int(request.form['id'])
+        layout.add_widget(Label(text="🛒 CART"))
 
-    conn = sqlite3.connect('store.db')
-    p = conn.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
-    conn.close()
+        self.items_box = BoxLayout(orientation="vertical")
+        self.refresh()
 
-    cart = session.get('cart', [])
+        layout.add_widget(self.items_box)
 
-    for i in cart:
-        if i['id'] == pid:
-            i['qty'] += 1
-            break
-    else:
-        cart.append({'id': p[0], 'name': p[1], 'price': p[2], 'qty': 1})
+        self.total_label = Label(text="")
+        layout.add_widget(self.total_label)
 
-    session['cart'] = cart
-    flash("Added to cart")
-    return redirect("/")
+        btn_checkout = Button(text="Checkout")
+        btn_checkout.bind(on_press=self.checkout)
+        layout.add_widget(btn_checkout)
 
-# CART
-@app.route("/cart")
-def cart():
-    cart = session.get('cart', [])
-    total = sum(i['price'] * i['qty'] for i in cart)
+        btn_back = Button(text="Back")
+        btn_back.bind(on_press=lambda x: self.manager.current = "home")
+        layout.add_widget(btn_back)
 
-    return render_template_string(html, page='cart', cart=cart, total=total)
+        self.add_widget(layout)
 
-# REGISTER
-@app.route("/register", methods=["GET","POST"])
-def register():
-    if request.method == "POST":
-        u = request.form['u']
-        p = generate_password_hash(request.form['p'])
+    def refresh(self):
+        self.items_box.clear_widgets()
 
-        conn = sqlite3.connect('store.db')
-        try:
-            conn.execute("INSERT INTO users VALUES (?,?)", (u,p))
-            conn.commit()
-            flash("Registered successfully")
-            return redirect("/login")
-        except:
-            flash("User exists")
-        conn.close()
+        total = 0
 
-    return render_template_string(html, page='register')
+        for pid, item in cart.items():
+            cost = item["price"] * item["qty"]
+            total += cost
 
-# LOGIN
-@app.route("/login", methods=["GET","POST"])
-def login():
-    if request.method == "POST":
-        u = request.form['u']
-        p = request.form['p']
+            row = BoxLayout(size_hint_y=None, height=40)
 
-        conn = sqlite3.connect('store.db')
-        user = conn.execute("SELECT * FROM users WHERE username=?", (u,)).fetchone()
-        conn.close()
+            row.add_widget(Label(text=f"{item['name']} x{item['qty']}"))
 
-        if user and check_password_hash(user[1], p):
-            session['user'] = u
-            flash("Login success")
-            return redirect("/")
-        else:
-            flash("Invalid credentials")
+            remove = Button(text="X", size_hint_x=0.3)
+            remove.bind(on_press=lambda x, id=pid: self.remove_item(id))
 
-    return render_template_string(html, page='login')
+            row.add_widget(remove)
+            self.items_box.add_widget(row)
 
-# LOGOUT
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect("/")
+        self.total_label.text = f"Total: MWK {total}"
 
-# RUN
+    def remove_item(self, pid):
+        if pid in cart:
+            del cart[pid]
+        self.refresh()
+
+    def checkout(self, instance):
+        cart.clear()
+        self.refresh()
+        self.total_label.text = "Order placed ✅"
+
+class AdminScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.build()
+
+    def build(self):
+        layout = BoxLayout(orientation="vertical")
+
+        layout.add_widget(Label(text="🧑‍🌾 ADMIN PANEL"))
+
+        self.name = TextInput(hint_text="Product name")
+        self.price = TextInput(hint_text="Price")
+
+        layout.add_widget(self.name)
+        layout.add_widget(self.price)
+
+        btn_add = Button(text="Add Product")
+        btn_add.bind(on_press=self.add_product)
+        layout.add_widget(btn_add)
+
+        btn_back = Button(text="Back")
+        btn_back.bind(on_press=lambda x: self.manager.current = "home")
+        layout.add_widget(btn_back)
+
+        self.add_widget(layout)
+
+    def add_product(self, instance):
+        cursor.execute(
+            "INSERT INTO products (name, price) VALUES (?,?)",
+            (self.name.text, float(self.price.text))
+        )
+        conn.commit()
+
+        self.name.text = ""
+        self.price.text = ""
+
+# ================= APP =================
+class GardenApp(App):
+    def build(self):
+        sm = ScreenManager()
+
+        sm.add_widget(HomeScreen(name="home"))
+        sm.add_widget(CartScreen(name="cart"))
+        sm.add_widget(AdminScreen(name="admin"))
+
+        return sm
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    GardenApp().run()
